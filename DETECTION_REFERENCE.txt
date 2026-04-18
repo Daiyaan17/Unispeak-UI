@@ -1,0 +1,555 @@
+================================================================================
+                    UNISPEAK — DETECTION REFERENCE GUIDE
+================================================================================
+
+This document lists all expressions/gestures the app can detect, explains how
+braille characters work, and describes how the CV pipeline detects them.
+
+
+================================================================================
+ PART 1: SIGN LANGUAGE — ALL DETECTABLE GESTURES
+================================================================================
+
+The app uses MediaPipe Hand Landmarker to track 21 points on the hand, then
+classifies gestures using geometric rules (which fingers are extended, angles,
+distances between landmarks).
+
+┌────┬──────────────────────┬───────────────┬───────────────────────────────────┐
+│ #  │ Gesture              │ Confidence    │ How It's Detected                 │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  1 │ Fist ✊               │ 90%           │ All 5 fingers curled (none        │
+│    │                      │               │ extended)                         │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  2 │ Thumbs Up 👍         │ 92%           │ Only thumb extended + thumb tip   │
+│    │                      │               │ is ABOVE thumb IP and MCP joints  │
+│    │                      │               │ (pointing upward)                 │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  3 │ Thumbs Down 👎       │ 88%           │ Only thumb extended + thumb tip   │
+│    │                      │               │ is BELOW thumb IP and MCP joints  │
+│    │                      │               │ (pointing downward)               │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  4 │ Point Up ☝️           │ 90%           │ Only index finger extended +      │
+│    │                      │               │ index tip above index PIP joint   │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  5 │ Peace / Victory ✌️   │ 91%           │ Index + middle fingers extended,  │
+│    │                      │               │ all others closed. Fingertips     │
+│    │                      │               │ spread apart (distance > 0.15)    │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  6 │ V Sign               │ 85%           │ Same as Peace but fingertips      │
+│    │                      │               │ close together (distance < 0.15)  │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  7 │ OK 👌                │ 89%           │ Thumb tip and index tip touching  │
+│    │                      │               │ (distance < 0.12) while middle,   │
+│    │                      │               │ ring, and pinky are extended      │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  8 │ Hello / Stop ✋      │ 93%           │ All 5 fingers extended + spread   │
+│    │                      │               │ wide (index-to-pinky dist > 0.4)  │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│  9 │ Open Hand            │ 80%           │ All 5 fingers extended but NOT    │
+│    │                      │               │ spread wide                       │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 10 │ I Love You 🤟        │ 92%           │ Thumb + index + pinky extended,   │
+│    │                      │               │ middle + ring closed              │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 11 │ Rock On 🤘           │ 87%           │ Index + pinky extended,           │
+│    │                      │               │ thumb + middle + ring closed      │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 12 │ Three                │ 85%           │ Index + middle + ring extended,   │
+│    │                      │               │ thumb + pinky closed              │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 13 │ Four                 │ 85%           │ Index + middle + ring + pinky     │
+│    │                      │               │ extended, only thumb closed       │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 14 │ Call Me 🤙           │ 88%           │ Thumb + pinky extended,           │
+│    │                      │               │ index + middle + ring closed      │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 15 │ L / Gun              │ 82%           │ Thumb + index extended,           │
+│    │                      │               │ middle + ring + pinky closed      │
+├────┼──────────────────────┼───────────────┼───────────────────────────────────┤
+│ 16 │ Finger Count         │ 60%           │ Fallback: counts how many         │
+│    │ (1-5 Fingers)        │               │ fingers are extended and shows    │
+│    │                      │               │ "N Fingers"                       │
+└────┴──────────────────────┴───────────────┴───────────────────────────────────┘
+
+STABILITY BUFFER:
+  - The app collects predictions over 12 consecutive frames
+  - A gesture is only "confirmed" when 70%+ of the buffer agrees
+  - This prevents flickering between gestures during transitions
+  - Confirmed gestures are accumulated into a sentence
+
+
+================================================================================
+ PART 2: HOW BRAILLE CHARACTERS WORK
+================================================================================
+
+Braille is a tactile writing system using raised dots arranged in cells.
+Each braille cell has 6 dot positions in a 3-row × 2-column grid:
+
+    ┌───┬───┐
+    │ 1 │ 4 │   ← Top row
+    ├───┼───┤
+    │ 2 │ 5 │   ← Middle row
+    ├───┼───┤
+    │ 3 │ 6 │   ← Bottom row
+    └───┴───┘
+
+A character is defined by WHICH dots are raised (present).
+With 6 positions, there are 2^6 = 64 possible combinations.
+
+
+FULL GRADE 1 ENGLISH BRAILLE ALPHABET:
+──────────────────────────────────────
+
+ Letter │ Raised Dots │ Cell Pattern  │ Unicode
+────────┼─────────────┼───────────────┼────────
+   A    │  1          │  ●·           │  ⠁
+        │             │  ··           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   B    │  1,2        │  ●·           │  ⠃
+        │             │  ●·           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   C    │  1,4        │  ●●           │  ⠉
+        │             │  ··           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   D    │  1,4,5      │  ●●           │  ⠙
+        │             │  ·●           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   E    │  1,5        │  ●·           │  ⠑
+        │             │  ·●           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   F    │  1,2,4      │  ●●           │  ⠋
+        │             │  ●·           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   G    │  1,2,4,5    │  ●●           │  ⠛
+        │             │  ●●           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   H    │  1,2,5      │  ●·           │  ⠓
+        │             │  ●●           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   I    │  2,4        │  ·●           │  ⠊
+        │             │  ●·           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   J    │  2,4,5      │  ·●           │  ⠚
+        │             │  ●●           │
+        │             │  ··           │
+────────┼─────────────┼───────────────┼────────
+   K    │  1,3        │  ●·           │  ⠅
+        │             │  ··           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   L    │  1,2,3      │  ●·           │  ⠇
+        │             │  ●·           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   M    │  1,3,4      │  ●●           │  ⠍
+        │             │  ··           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   N    │  1,3,4,5    │  ●●           │  ⠝
+        │             │  ·●           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   O    │  1,3,5      │  ●·           │  ⠕
+        │             │  ·●           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   P    │  1,2,3,4    │  ●●           │  ⠏
+        │             │  ●·           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   Q    │  1,2,3,4,5  │  ●●           │  ⠟
+        │             │  ●●           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   R    │  1,2,3,5    │  ●·           │  ⠗
+        │             │  ●●           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   S    │  2,3,4      │  ·●           │  ⠎
+        │             │  ●·           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   T    │  2,3,4,5    │  ·●           │  ⠞
+        │             │  ●●           │
+        │             │  ●·           │
+────────┼─────────────┼───────────────┼────────
+   U    │  1,3,6      │  ●·           │  ⠥
+        │             │  ··           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+   V    │  1,2,3,6    │  ●·           │  ⠧
+        │             │  ●·           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+   W    │  2,4,5,6    │  ·●           │  ⠺
+        │             │  ●●           │
+        │             │  ·●           │
+────────┼─────────────┼───────────────┼────────
+   X    │  1,3,4,6    │  ●●           │  ⠭
+        │             │  ··           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+   Y    │  1,3,4,5,6  │  ●●           │  ⠽
+        │             │  ·●           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+   Z    │  1,3,5,6    │  ●·           │  ⠵
+        │             │  ·●           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+   #    │  3,4,5,6    │  ··           │  ⠼
+ (num)  │             │  ·●           │
+        │             │  ●●           │
+────────┼─────────────┼───────────────┼────────
+ Space  │  (none)     │  ··           │  ⠀
+        │             │  ··           │
+        │             │  ··           │
+└────────┴─────────────┴───────────────┴────────┘
+
+● = raised dot (present)
+· = flat (absent)
+
+NUMBERS IN BRAILLE:
+  Numbers use the same patterns as letters A-J, but preceded by the
+  number indicator (#, dots 3,4,5,6):
+
+    1 = # + A      6 = # + F
+    2 = # + B      7 = # + G
+    3 = # + C      8 = # + H
+    4 = # + D      9 = # + I
+    5 = # + E      0 = # + J
+
+
+================================================================================
+ PART 3: HOW THE APP DETECTS BRAILLE CHARACTERS
+================================================================================
+
+The braille detection uses a computer vision pipeline with OpenCV:
+
+STEP 1: IMAGE PREPROCESSING
+──────────────────────────
+    Camera Frame (RGB)
+         │
+         ▼
+    Convert to Grayscale
+         │
+         ▼
+    Gaussian Blur (7×7 kernel)
+    — smooths noise, preserves dot edges
+         │
+         ▼
+    Adaptive Threshold (Gaussian, block=15, C=8)
+    — converts to black/white, adapts to local lighting
+    — dots become white blobs on black background
+         │
+         ▼
+    Morphological Open (3×3 ellipse kernel)
+    — removes tiny noise specks
+         │
+         ▼
+    Morphological Close (3×3 ellipse kernel)
+    — fills small gaps in dot contours
+
+
+STEP 2: DOT DETECTION
+─────────────────────
+    Binary Image
+         │
+         ▼
+    Find Contours (external only)
+         │
+         ▼
+    For each contour, calculate:
+      • Area — must be between 30 and 2000 pixels
+      • Circularity = 4π × Area / Perimeter²
+        — must be > 0.55 (close to circular)
+      • Center point via image moments
+      • Radius = √(Area / π)
+         │
+         ▼
+    Filter: Keep only contours that are:
+      ✓ Right size (not too big, not too small)
+      ✓ Circular enough (rejects lines, squares, etc.)
+         │
+         ▼
+    Output: List of dot center coordinates (x, y) and radii
+
+
+STEP 3: CLUSTERING DOTS INTO CELLS
+──────────────────────────────────
+    Dot Centers
+         │
+         ▼
+    Calculate nearest-neighbor distances between all dots
+    — uses scipy.spatial.distance.cdist
+         │
+         ▼
+    Find median spacing between dots
+    — this tells us how far apart dots within a cell are
+         │
+         ▼
+    Define cell boundaries:
+      cell_width  = 2.5 × median spacing
+      cell_height = 3.5 × median spacing
+         │
+         ▼
+    Greedy clustering:
+    — Pick an unused dot as seed
+    — Find all unused dots within cell_width and cell_height
+    — Group them as one cell (max 6 dots per cell)
+    — Repeat until all dots are assigned
+
+
+STEP 4: MAPPING DOTS TO BRAILLE POSITIONS
+─────────────────────────────────────────
+    For each cell (group of dots):
+         │
+         ▼
+    Find the center of the cell (midpoint of all dots)
+         │
+         ▼
+    For each dot in the cell:
+      — Is it LEFT or RIGHT of center? → Column 1 (dots 1,2,3) or Column 2 (dots 4,5,6)
+      — Is it in TOP, MIDDLE, or BOTTOM third? → Row determines exact position
+      — Map to braille dot index:
+          Left column:  Top=1, Middle=2, Bottom=3
+          Right column: Top=4, Middle=5, Bottom=6
+         │
+         ▼
+    Output: Tuple of active dot indices, e.g. (1, 2) for letter B
+
+
+STEP 5: DECODING TO TEXT
+────────────────────────
+    Dot pattern tuple
+         │
+         ▼
+    Look up in BRAILLE_TO_CHAR dictionary
+    Example: (1, 2) → 'b'
+             (1, 3, 4) → 'm'
+             (1, 2, 3, 4, 5) → 'q'
+         │
+         ▼
+    Concatenate decoded characters from all cells
+         │
+         ▼
+    Stability buffer (8 frames, 50% agreement)
+    — prevents flickering, confirms detection
+
+
+STEP 6: VISUAL FEEDBACK ON SCREEN
+──────────────────────────────────
+    On the camera feed, the app draws:
+    • Cyan circles around each detected dot
+    • Green dot at each dot center
+    • Green rectangle around each braille cell
+    • Decoded letter above each cell
+    • Info bar at bottom showing full decoded text
+    • Status bar showing dot count, cell count, and confidence %
+
+
+================================================================================
+ PART 4: HOW SIGN LANGUAGE DETECTION WORKS
+================================================================================
+
+STEP 1: HAND DETECTION
+─────────────────────
+    Camera Frame (RGB, mirrored)
+         │
+         ▼
+    MediaPipe HandLandmarker model (float16 TFLite)
+    — Detects hand presence in frame
+    — Extracts 21 landmark points per hand:
+
+         Landmark Map:
+              4 (thumb tip)
+             /
+            3 (thumb IP)
+           /
+          2 (thumb MCP)        8 (index tip)     12 (middle tip)
+         /                    /                  /
+        1 (thumb CMC)    7   /              11  /    16 (ring tip)  20 (pinky tip)
+        |               /   /              /   /    /              /
+        0 (WRIST) --- 5 ---6          9 --10  13--14--15      17--18--19
+                       |              |        |               |
+                       └──────────────┴────────┴───────────────┘
+                                  (palm base)
+
+
+STEP 2: LANDMARK NORMALIZATION
+─────────────────────────────
+    21 raw landmarks (x, y, z in 0-1 range)
+         │
+         ▼
+    Subtract wrist position (landmark 0)
+    — makes all coords relative to the wrist
+         │
+         ▼
+    Divide by max distance from wrist
+    — normalizes hand size (works at any distance from camera)
+
+
+STEP 3: FINGER EXTENSION CHECK
+──────────────────────────────
+    For each finger, determine if it's "extended" (open) or "curled" (closed):
+
+    THUMB:
+      — Calculate palm center = average of wrist(0), index_mcp(5), pinky_mcp(17)
+      — If thumb tip(4) is farther from palm center than thumb MCP(2) × 1.1
+        → Thumb is EXTENDED
+
+    INDEX, MIDDLE, RING, PINKY:
+      — If fingertip Y-coordinate < PIP joint Y-coordinate
+        (tip is ABOVE the second knuckle)
+        → Finger is EXTENDED
+
+    Result: [thumb, index, middle, ring, pinky] = [True/False × 5]
+
+
+STEP 4: GESTURE CLASSIFICATION
+──────────────────────────────
+    The 5-boolean finger state + landmark distances are used to match rules:
+
+    Example: fingers_up = [False, True, True, False, False]
+    — Only index and middle are up → "Peace ✌️"
+
+    Example: fingers_up = [True, True, False, False, True]
+    — Thumb, index, and pinky up → "I Love You 🤟"
+
+    Rules are checked in priority order (specific gestures first,
+    generic fallbacks last).
+
+
+STEP 5: STABILITY & OUTPUT
+─────────────────────────
+    Raw prediction (every frame, ~30 FPS)
+         │
+         ▼
+    Push to 12-frame circular buffer
+         │
+         ▼
+    If 70%+ of buffer agrees on same gesture:
+      → CONFIRMED — append to sentence
+      → Update translation panel
+    Otherwise:
+      → Keep showing raw prediction but don't commit
+
+    Confirmed gestures accumulate into a sentence:
+      "Thumbs Up 👍" → "Peace ✌️" → "Hello / Stop ✋"
+      Sentence: "Thumbs Up 👍 Peace ✌️ Hello / Stop ✋"
+
+
+================================================================================
+ PART 5: HOW TO PLACE AN IMAGE FOR BRAILLE DETECTION
+================================================================================
+
+STEP-BY-STEP SETUP:
+
+  1. PRINT OR PREPARE YOUR BRAILLE
+     — Print a braille sheet on white paper (black dots on white)
+     — Or open a braille image on your phone/tablet screen
+     — High contrast is key: dark dots, light background
+
+  2. POSITION THE BRAILLE IN FRONT OF THE CAMERA
+
+         ┌──────────────┐
+         │   CAMERA     │
+         │   LENS       │
+         └──────┬───────┘
+                │
+                │  15-30 cm (6-12 inches)
+                │
+         ┌──────▼───────┐
+         │  ● ●         │
+         │  ●   ●       │  ← Braille paper/screen
+         │  ●   ●       │     held FLAT facing camera
+         │              │
+         └──────────────┘
+
+  3. ANGLE: Hold the paper FLAT and PARALLEL to the camera
+     — Do NOT tilt the paper
+     — The camera should look straight at the surface
+
+         ✅ CORRECT:              ❌ WRONG:
+         Camera                   Camera
+           │                        │
+           │  (perpendicular)       │  (angled)
+           ▼                         \
+         ▬▬▬▬▬▬ paper               ╲ paper tilted
+
+  4. DISTANCE:
+     — Start at about 15-20 cm (6-8 inches)
+     — Move closer if the dots are small
+     — Move farther if only partial text is visible
+     — The dots should appear as clear circles on screen
+
+  5. LIGHTING:
+     — Use even, diffused lighting (overhead room light)
+     — Avoid direct sunlight or harsh shadows
+     — No light source shining directly at the camera
+
+         ✅ GOOD:                 ❌ BAD:
+         💡 (overhead)            💡──→ camera (glare)
+           │                         
+           ▼                      Shadow across paper
+         paper ← evenly lit
+
+  6. WHAT YOU'LL SEE ON SCREEN:
+     — Cyan circles appear around detected dots
+     — Green rectangles show identified braille cells
+     — Decoded letters appear above each cell
+     — Bottom bar shows the full decoded text
+     — Top-left shows: "⠿ X dots · Y cells  Z%"
+
+  7. HOLD STEADY for 1-2 seconds
+     — The stability buffer needs consistent frames
+     — Once confirmed, text appears in the translation panel
+
+
+EXAMPLE PLACEMENT FOR A BRAILLE WORD "HELLO":
+
+    Braille for H-E-L-L-O on paper:
+
+    ●·  ●·  ●·  ●·  ●·
+    ●●  ·●  ●·  ●·  ·●
+    ··  ··  ●·  ●·  ●·
+
+    Hold this 15cm from camera → app should decode "hello"
+
+
+USING A PHONE/TABLET AS BRAILLE SOURCE:
+  — Search "braille alphabet image" online
+  — Display it on your phone at full brightness
+  — Hold the phone screen facing your laptop camera
+  — Keep the phone steady and parallel to the camera
+
+
+================================================================================
+ TIPS FOR BEST DETECTION
+================================================================================
+
+SIGN LANGUAGE:
+  • Hold your hand 30-60 cm from the camera
+  • Use a plain, non-busy background (solid wall)
+  • Ensure good lighting (avoid backlighting)
+  • Keep fingers clearly separated for spread gestures
+  • Hold each gesture steady for ~1 second for confirmation
+
+BRAILLE:
+  • Use printed braille on white/light paper
+  • Hold the paper flat, facing the camera
+  • Ensure even lighting (no shadows across the dots)
+  • Get close enough that dots are clearly visible
+  • Avoid tilting — keep the paper parallel to the camera
+  • Works best with high-contrast dots (dark dots on light surface)
+
+================================================================================

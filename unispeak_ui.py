@@ -15,6 +15,24 @@ import cv2
 import threading
 import math
 import random
+import time as _time
+
+# CV Detectors
+try:
+    from isl_engine import (
+        KeypointExtractor, SignRecognizer, SentenceComposer,
+        MockISLModel, ISL_LABELS_50, get_label_map,
+        draw_hand_landmarks,
+    )
+    ISL_ENGINE_AVAILABLE = True
+except ImportError:
+    ISL_ENGINE_AVAILABLE = False
+
+try:
+    from braille_detector import BrailleDetector
+    BRAILLE_DETECTOR_AVAILABLE = True
+except ImportError:
+    BRAILLE_DETECTOR_AVAILABLE = False
 
 try:
     import speech_recognition as sr
@@ -111,6 +129,18 @@ class UnispeakApp:
         self.cap = None
         self._camera_after_id = None
         self._photo_refs = []  # prevent GC
+
+        # CV Detectors (lazy-initialized when camera starts)
+        self.sign_detector = None
+        self.braille_detector = None
+        self._detectors_initialized = False
+
+        # ISL engine state
+        self._isl_extractor = None
+        self._isl_recognizer = None
+        self._isl_composer = None
+        self._isl_tokens = []           # signs accumulating
+        self._conversation_lines = []   # completed sentences
 
         # Speech-to-text state
         self.stt_recording = False
@@ -399,6 +429,26 @@ class UnispeakApp:
         self.badge_window = self.camera_canvas.create_window(0, 16, anchor="ne",
                                                               window=badge_frame)
 
+        # Overlay: detection status bar (shows gesture/braille info)
+        status_frame = tk.Frame(self.camera_canvas, bg="#0d1117")
+
+        self.detect_status_dot = tk.Label(status_frame, text="◉", fg=C["primary"],
+                                          bg="#0d1117", font=(self.FONT, 10))
+        self.detect_status_dot.pack(side="left", padx=(10, 4), pady=5)
+
+        self.detect_status_label = tk.Label(status_frame, text="Ready",
+                                            fg=C["text_gray"], bg="#0d1117",
+                                            font=(self.FONT, 9))
+        self.detect_status_label.pack(side="left", padx=(0, 8), pady=5)
+
+        self.detect_conf_label = tk.Label(status_frame, text="",
+                                          fg=C["primary"], bg="#0d1117",
+                                          font=(self.FONT, 9, "bold"))
+        self.detect_conf_label.pack(side="left", padx=(0, 10), pady=5)
+
+        self.status_window = self.camera_canvas.create_window(16, 16, anchor="nw",
+                                                               window=status_frame)
+
         # Overlay: controls pill
         pill_frame = tk.Frame(self.camera_canvas, bg=C["pill_bg"])
 
@@ -413,6 +463,12 @@ class UnispeakApp:
                            font=(self.FONT, 14), cursor="hand2")
         mic_btn.pack(side="left", padx=8, pady=8)
 
+        # Clear detection button
+        clear_btn = tk.Label(pill_frame, text="🗑", bg=C["pill_bg"], fg=C["text_dark"],
+                             font=(self.FONT, 14), cursor="hand2")
+        clear_btn.pack(side="left", padx=(8, 8), pady=8)
+        clear_btn.bind("<Button-1>", lambda e: self._clear_detection())
+
         # Equalizer / settings
         eq_btn = tk.Label(pill_frame, text="☰", bg=C["pill_bg"], fg=C["text_dark"],
                           font=(self.FONT, 14), cursor="hand2")
@@ -425,10 +481,60 @@ class UnispeakApp:
         w, h = event.width, event.height
         # Reposition badge top-right
         self.camera_canvas.coords(self.badge_window, w - 16, 16)
+        # Reposition status bar top-left
+        self.camera_canvas.coords(self.status_window, 16, 16)
         # Reposition pill bottom-center
         self.camera_canvas.coords(self.pill_window, w // 2, h - 20)
         # Keep placeholder centered
         self.camera_canvas.coords(self._placeholder_id, w // 2, h // 2)
+
+    def _clear_detection(self):
+        """Clear accumulated detection text."""
+        if self._isl_composer:
+            self._isl_composer.clear()
+        self._isl_tokens.clear()
+        self._conversation_lines.clear()
+        if self.braille_detector:
+            self.braille_detector.clear()
+        self.token_line.configure(text="")
+        self.trans_text.configure(
+            text="Detection cleared. Show a gesture or braille to start."
+        )
+
+    # ─── ISL Callbacks ───────────────────────────────────────────────
+    def _on_sign_detected(self, label, confidence):
+        """Called by SignRecognizer when a sign is recognized."""
+        self._isl_tokens.append(label)
+        if self._isl_composer:
+            self._isl_composer.add_sign(label)
+        # Update token display on main thread
+        self.root.after(0, self._update_token_display)
+
+    def _update_token_display(self):
+        """Show the accumulating sign tokens."""
+        if self._isl_tokens:
+            tokens = "  →  ".join(self._isl_tokens)
+            self.token_line.configure(text=f"🤟  {tokens}")
+        else:
+            self.token_line.configure(text="")
+
+    def _on_sentence_ready(self, sentence):
+        """Called by SentenceComposer when a sentence is formed."""
+        self._isl_tokens.clear()
+        timestamp = _time.strftime("%H:%M")
+        line = f"[{timestamp}]  {sentence}"
+        self._conversation_lines.append(line)
+        # Keep last 8 lines
+        if len(self._conversation_lines) > 8:
+            self._conversation_lines = self._conversation_lines[-8:]
+        # Update UI on main thread
+        self.root.after(0, self._refresh_conversation)
+
+    def _refresh_conversation(self):
+        """Update the translation panel with conversation history."""
+        self.token_line.configure(text="")
+        text = "\n".join(self._conversation_lines)
+        self.trans_text.configure(text=text if text else "Listening for signs...")
 
     # ─── Translation Box ─────────────────────────────────────────────
     def _build_translation(self, parent):
@@ -438,7 +544,7 @@ class UnispeakApp:
         self.trans_outer = trans_outer
 
         header = tk.Frame(trans_outer, bg=C["bg_card"])
-        header.pack(fill="x", padx=24, pady=(20, 10))
+        header.pack(fill="x", padx=24, pady=(20, 4))
 
         tk.Label(header, text="REAL-TIME TRANSLATION", bg=C["bg_card"],
                  fg=C["muted"], font=(self.FONT, 10, "bold")).pack(side="left")
@@ -449,14 +555,21 @@ class UnispeakApp:
         copy_btn.pack(side="right")
         copy_btn.bind("<Button-1>", lambda e: self._copy_text())
 
+        # Token accumulation line (shows signs building up before sentence)
+        self.token_line = tk.Label(
+            trans_outer, text="", bg=C["bg_card"], fg="#64ffda",
+            font=(self.FONT, 11), wraplength=650, justify="left", anchor="w",
+        )
+        self.token_line.pack(fill="x", padx=24, pady=(4, 2))
+
+        # Main translation / conversation area
         self.trans_text = tk.Label(
             trans_outer,
-            text="Hello, I am currently demonstrating the new translation engine. "
-                 "The system is accurately detecting my movements.",
+            text="Start camera and begin signing to translate.",
             bg=C["bg_card"], fg=C["text_dark"],
-            font=(self.FONT, 18), wraplength=650, justify="left", anchor="w",
+            font=(self.FONT, 16), wraplength=650, justify="left", anchor="nw",
         )
-        self.trans_text.pack(fill="x", padx=24, pady=(4, 24))
+        self.trans_text.pack(fill="x", padx=24, pady=(4, 20))
 
     # ─── Bottom Buttons ──────────────────────────────────────────────
     def _build_bottom_buttons(self, parent):
@@ -582,9 +695,47 @@ class UnispeakApp:
         self.root.after(400, lambda: self.trans_text.configure(fg=C["text_dark"]))
 
     # ──────────────────────────── CAMERA ─────────────────────────────
+    def _ensure_detectors(self):
+        """Lazy-initialize CV detectors on first camera use."""
+        if self._detectors_initialized:
+            return
+        self._detectors_initialized = True
+
+        # ISL engine (sign language)
+        if ISL_ENGINE_AVAILABLE and self._isl_extractor is None:
+            try:
+                self._isl_extractor = KeypointExtractor()
+                model = MockISLModel()  # swap with real model when available
+                label_map = get_label_map(ISL_LABELS_50)
+                self._isl_recognizer = SignRecognizer(
+                    model=model, label_map=label_map,
+                    confidence_threshold=0.65,
+                    on_sign_detected=self._on_sign_detected,
+                )
+                self._isl_composer = SentenceComposer(
+                    api_key="",  # set your API key for Claude NLP
+                    pause_threshold=2.5,
+                    on_sentence_ready=self._on_sentence_ready,
+                )
+                self.sign_detector = True  # flag that ISL is available
+                print("[Unispeak] ✅ ISL engine loaded (mock mode)")
+            except Exception as ex:
+                print(f"[Unispeak] ⚠️ ISL engine init failed: {ex}")
+
+        if BRAILLE_DETECTOR_AVAILABLE and self.braille_detector is None:
+            try:
+                self.braille_detector = BrailleDetector()
+                print("[Unispeak] ✅ Braille detector loaded")
+            except Exception as ex:
+                print(f"[Unispeak] ⚠️ Braille detector init failed: {ex}")
+
     def _start_camera(self):
         if self.camera_running:
             return
+
+        # Initialize CV detectors on first camera start
+        self._ensure_detectors()
+
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             self.trans_text.configure(
@@ -607,10 +758,16 @@ class UnispeakApp:
             self._camera_after_id = None
         self.start_btn.configure(text="📹  Start Camera", bg=C["primary"])
 
+        # Reset detection status
+        self.detect_status_dot.configure(fg=C["text_gray"])
+        self.detect_status_label.configure(text="Ready", fg=C["text_gray"])
+        self.detect_conf_label.configure(text="")
+
         # Restore blank placeholder
         self.camera_canvas.delete("feed")
         self.camera_canvas.itemconfigure(self._placeholder_id, state="normal")
         self.camera_canvas.tag_raise(self.badge_window)
+        self.camera_canvas.tag_raise(self.status_window)
         self.camera_canvas.tag_raise(self.pill_window)
 
     def _update_frame(self):
@@ -618,18 +775,84 @@ class UnispeakApp:
             return
         ret, frame = self.cap.read()
         if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Mirror the frame for natural interaction
+            frame = cv2.flip(frame, 1)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             cw = self.camera_canvas.winfo_width()
             ch = self.camera_canvas.winfo_height()
+
+            # ── Run CV detection based on current mode ───────────
+
+            if self.current_mode == "sign" and self.sign_detector and self._isl_extractor:
+                # Feed frame to ISL pipeline
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                keypoints = self._isl_extractor.extract(frame_bgr)
+                self._isl_recognizer.push_frame(keypoints)
+
+                # Draw hand landmarks on frame
+                result = self._isl_extractor.extract_landmarks_for_drawing(frame_bgr)
+                h_frame, w_frame = frame_rgb.shape[:2]
+                draw_hand_landmarks(frame_rgb, result, w_frame, h_frame)
+
+                # Update status bar
+                sign = self._isl_recognizer.current_sign
+                conf = self._isl_recognizer.current_confidence
+                has_hands = result.hand_landmarks and len(result.hand_landmarks) > 0
+
+                if has_hands:
+                    status_text = f"✋ {sign}" if sign else "✋ Analyzing..."
+                    self.detect_status_dot.configure(fg="#22c55e")
+                    self.detect_status_label.configure(text=status_text, fg="#22c55e")
+                    self.detect_conf_label.configure(
+                        text=f"{int(conf * 100)}%" if conf > 0.3 else ""
+                    )
+                else:
+                    self.detect_status_dot.configure(fg=C["text_gray"])
+                    self.detect_status_label.configure(
+                        text="No hand detected", fg=C["text_gray"])
+                    self.detect_conf_label.configure(text="")
+
+            elif self.current_mode == "braille" and self.braille_detector:
+                annotated, detected_text = self.braille_detector.process_frame(frame_rgb)
+                frame_rgb = annotated
+
+                dot_count = self.braille_detector.dot_count
+                cell_count = self.braille_detector.cell_count
+                conf = self.braille_detector.confidence
+
+                if dot_count > 0:
+                    self.detect_status_dot.configure(fg="#a78bfa")
+                    self.detect_status_label.configure(
+                        text=f"⠿ {dot_count} dots · {cell_count} cells",
+                        fg="#a78bfa")
+                    self.detect_conf_label.configure(
+                        text=f"{int(conf * 100)}%" if conf > 0 else "")
+                else:
+                    self.detect_status_dot.configure(fg=C["text_gray"])
+                    self.detect_status_label.configure(
+                        text="Scanning for braille...", fg=C["text_gray"])
+                    self.detect_conf_label.configure(text="")
+
+                if detected_text:
+                    self.trans_text.configure(text=detected_text)
+
+            else:
+                self.detect_status_dot.configure(fg=C["text_gray"])
+                self.detect_status_label.configure(
+                    text="Detector not loaded", fg=C["text_gray"])
+                self.detect_conf_label.configure(text="")
+
+            # Resize and display
             if cw > 1 and ch > 1:
-                frame = cv2.resize(frame, (cw, ch))
-            img = Image.fromarray(frame)
+                frame_rgb = cv2.resize(frame_rgb, (cw, ch))
+            img = Image.fromarray(frame_rgb)
             self._feed_photo = ImageTk.PhotoImage(img)
             self.camera_canvas.delete("placeholder")
             self.camera_canvas.delete("feed")
             self.camera_canvas.create_image(0, 0, anchor="nw",
                                             image=self._feed_photo, tags="feed")
             self.camera_canvas.tag_raise(self.badge_window)
+            self.camera_canvas.tag_raise(self.status_window)
             self.camera_canvas.tag_raise(self.pill_window)
         self._camera_after_id = self.root.after(33, self._update_frame)
 
@@ -1183,6 +1406,11 @@ class UnispeakApp:
         self._stop_camera()
         if self.stt_recording:
             self._stop_stt_recording()
+        # Release CV detectors
+        if self._isl_extractor:
+            self._isl_extractor.close()
+        if self._isl_composer:
+            self._isl_composer.clear()
         self.root.destroy()
 
     def run(self):
